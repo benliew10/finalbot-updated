@@ -4574,12 +4574,9 @@ def handle_accounting_add_amount(update: Update, context: CallbackContext) -> No
                 user_info = potential_user
         
         if not user_info and update.message.reply_to_message:
-            # Get user info from reply
+            # Get user info from reply - prioritize name over username
             replied_user = update.message.reply_to_message.from_user
-            if replied_user.username:
-                user_info = f"@{replied_user.username}"
-            else:
-                user_info = replied_user.first_name or "未知用户"
+            user_info = replied_user.first_name or f"@{replied_user.username}" or "未知用户"
         
         # Store group name for future reference
         if chat_id not in group_names and update.effective_chat.title:
@@ -4644,12 +4641,9 @@ def handle_accounting_subtract_amount(update: Update, context: CallbackContext) 
                 user_info = potential_user
         
         if not user_info and update.message.reply_to_message:
-            # Get user info from reply
+            # Get user info from reply - prioritize name over username
             replied_user = update.message.reply_to_message.from_user
-            if replied_user.username:
-                user_info = f"@{replied_user.username}"
-            else:
-                user_info = replied_user.first_name or "未知用户"
+            user_info = replied_user.first_name or f"@{replied_user.username}" or "未知用户"
         
         # Store group name for future reference
         if chat_id not in group_names and update.effective_chat.title:
@@ -4714,12 +4708,9 @@ def handle_accounting_distribute(update: Update, context: CallbackContext) -> No
                 user_info = potential_user
         
         if not user_info and update.message.reply_to_message:
-            # Get user info from reply
+            # Get user info from reply - prioritize name over username
             replied_user = update.message.reply_to_message.from_user
-            if replied_user.username:
-                user_info = f"@{replied_user.username}"
-            else:
-                user_info = replied_user.first_name or "未知用户"
+            user_info = replied_user.first_name or f"@{replied_user.username}" or "未知用户"
         
         # Store group name for future reference
         if chat_id not in group_names and update.effective_chat.title:
