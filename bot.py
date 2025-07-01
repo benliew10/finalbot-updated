@@ -2270,7 +2270,12 @@ def button_callback(update: Update, context: CallbackContext) -> None:
         try:
             today = datetime.now().strftime("%Y-%m-%d")
             bill_content = generate_bill(chat_id)
-            filename = f"current_bill_{chat_id}_{today}.txt"
+            
+            # Use group name for filename
+            group_name = group_names.get(chat_id, f"群组{abs(chat_id) % 10000}")
+            # Clean up group name for filename (remove special characters)
+            clean_name = "".join(c for c in group_name if c.isalnum() or c in (' ', '-', '_')).strip()
+            filename = f"{clean_name}_当前账单_{today}.txt"
             
             export_bill_as_file(context, query.message.chat_id, bill_content, filename)
             query.answer("当前账单已导出")
@@ -2318,9 +2323,13 @@ def button_callback(update: Update, context: CallbackContext) -> None:
             
             try:
                 bill_content = get_bill_for_date(group_id, date)
-                filename = f"bill_{group_id}_{date}.txt"
                 
-                group_name = group_names.get(group_id, f"群组 {abs(group_id) % 10000}")
+                # Use group name for filename
+                group_name = group_names.get(group_id, f"群组{abs(group_id) % 10000}")
+                # Clean up group name for filename (remove special characters)
+                clean_name = "".join(c for c in group_name if c.isalnum() or c in (' ', '-', '_')).strip()
+                filename = f"{clean_name}_{date}_账单.txt"
+                
                 export_bill_as_file(context, query.message.chat_id, bill_content, filename)
                 query.answer(f"{group_name} 的 {date} 账单已导出")
                 
@@ -2336,7 +2345,7 @@ def button_callback(update: Update, context: CallbackContext) -> None:
             # Generate consolidated summary
             summary_content = generate_consolidated_summary(date)
             
-            filename = f"summary_{date}.txt"
+            filename = f"财务总结_{date}.txt"
             export_bill_as_file(context, query.message.chat_id, summary_content, filename)
             query.answer(f"{date} 财务总结已导出")
             
@@ -4525,13 +4534,20 @@ def handle_accounting_add_amount(update: Update, context: CallbackContext) -> No
         return
     
     try:
-        # Remove + and get amount
+        # Remove + and get content
         content = message_text[1:].strip()
-        amount = float(content)
         
-        # Get user info from reply if replying to someone
+        # Parse amount and user info (support both formats)
+        parts = content.split(' ', 1)
+        amount = float(parts[0])
+        
+        # Get user info - priority: provided in message > reply > none
         user_info = ""
-        if update.message.reply_to_message:
+        if len(parts) > 1:
+            # User provided user info in message (+100 @username)
+            user_info = parts[1]
+        elif update.message.reply_to_message:
+            # Get user info from reply
             replied_user = update.message.reply_to_message.from_user
             if replied_user.username:
                 user_info = f"@{replied_user.username}"
@@ -4546,9 +4562,14 @@ def handle_accounting_add_amount(update: Update, context: CallbackContext) -> No
         # Add transaction
         add_transaction(chat_id, amount, user_info, 'deposit')
         
-        # Generate and send updated bill
+        # Generate and send updated bill with export button
         bill = generate_bill(chat_id)
-        update.message.reply_text(bill)
+        
+        # Add button to export current bill
+        keyboard = [[InlineKeyboardButton("当前账单", callback_data=f"export_current_bill_{chat_id}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        update.message.reply_text(bill, reply_markup=reply_markup)
         
         logger.info(f"Added deposit: +{amount} for {user_info} in group {chat_id}")
         
@@ -4578,13 +4599,20 @@ def handle_accounting_subtract_amount(update: Update, context: CallbackContext) 
         return
     
     try:
-        # Remove - and get amount
+        # Remove - and get content
         content = message_text[1:].strip()
-        amount = float(content)
         
-        # Get user info from reply if replying to someone
+        # Parse amount and user info (support both formats)
+        parts = content.split(' ', 1)
+        amount = float(parts[0])
+        
+        # Get user info - priority: provided in message > reply > none
         user_info = ""
-        if update.message.reply_to_message:
+        if len(parts) > 1:
+            # User provided user info in message (-100 @username)
+            user_info = parts[1]
+        elif update.message.reply_to_message:
+            # Get user info from reply
             replied_user = update.message.reply_to_message.from_user
             if replied_user.username:
                 user_info = f"@{replied_user.username}"
@@ -4599,9 +4627,14 @@ def handle_accounting_subtract_amount(update: Update, context: CallbackContext) 
         # Add negative transaction
         add_transaction(chat_id, -amount, user_info, 'deposit')
         
-        # Generate and send updated bill
+        # Generate and send updated bill with export button
         bill = generate_bill(chat_id)
-        update.message.reply_text(bill)
+        
+        # Add button to export current bill
+        keyboard = [[InlineKeyboardButton("当前账单", callback_data=f"export_current_bill_{chat_id}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        update.message.reply_text(bill, reply_markup=reply_markup)
         
         logger.info(f"Added withdrawal: -{amount} for {user_info} in group {chat_id}")
         
@@ -4631,13 +4664,20 @@ def handle_accounting_distribute(update: Update, context: CallbackContext) -> No
         return
     
     try:
-        # Remove 下发 and get amount
+        # Remove 下发 and get content
         content = message_text[2:].strip()
-        amount = float(content)
         
-        # Get user info from reply if replying to someone
+        # Parse amount and user info (support both formats)
+        parts = content.split(' ', 1)
+        amount = float(parts[0])
+        
+        # Get user info - priority: provided in message > reply > none
         user_info = ""
-        if update.message.reply_to_message:
+        if len(parts) > 1:
+            # User provided user info in message (下发100 @username)
+            user_info = parts[1]
+        elif update.message.reply_to_message:
+            # Get user info from reply
             replied_user = update.message.reply_to_message.from_user
             if replied_user.username:
                 user_info = f"@{replied_user.username}"
@@ -4652,9 +4692,14 @@ def handle_accounting_distribute(update: Update, context: CallbackContext) -> No
         # Add distribution
         add_transaction(chat_id, amount, user_info, 'distribution')
         
-        # Generate and send updated bill
+        # Generate and send updated bill with export button
         bill = generate_bill(chat_id)
-        update.message.reply_text(bill)
+        
+        # Add button to export current bill
+        keyboard = [[InlineKeyboardButton("当前账单", callback_data=f"export_current_bill_{chat_id}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        update.message.reply_text(bill, reply_markup=reply_markup)
         
         logger.info(f"Added distribution: {amount} for {user_info} in group {chat_id}")
         
@@ -4823,8 +4868,11 @@ def handle_export_yesterday_bill(update: Update, context: CallbackContext) -> No
             update.message.reply_text(bill_content)
             return
         
-        # Export as file
-        filename = f"bill_{chat_id}_{yesterday}.txt"
+        # Export as file using group name
+        group_name = group_names.get(chat_id, f"群组{abs(chat_id) % 10000}")
+        # Clean up group name for filename (remove special characters)
+        clean_name = "".join(c for c in group_name if c.isalnum() or c in (' ', '-', '_')).strip()
+        filename = f"{clean_name}_昨日账单_{yesterday}.txt"
         export_bill_as_file(context, chat_id, bill_content, filename)
         
         logger.info(f"Yesterday's bill exported for group {chat_id}")
