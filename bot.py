@@ -3429,20 +3429,21 @@ def register_handlers(dispatcher):
         run_async=True
     ))
     
+    # Accounting amount handlers - support both formats: "+100" and "+100 @username"
     dispatcher.add_handler(MessageHandler(
-        Filters.text & Filters.regex(r'^\+\d+(\.\d+)?\s+.+'),
+        Filters.text & Filters.regex(r'^\+\d+(\.\d+)?(\s+.*)?$'),
         handle_accounting_add_amount,
         run_async=True
     ))
     
     dispatcher.add_handler(MessageHandler(
-        Filters.text & Filters.regex(r'^-\d+(\.\d+)?\s+.+'),
+        Filters.text & Filters.regex(r'^-\d+(\.\d+)?(\s+.*)?$'),
         handle_accounting_subtract_amount,
         run_async=True
     ))
     
     dispatcher.add_handler(MessageHandler(
-        Filters.text & Filters.regex(r'^下发\d+(\.\d+)?\s+.+'),
+        Filters.text & Filters.regex(r'^下发\d+(\.\d+)?(\s+.*)?$'),
         handle_accounting_distribute,
         run_async=True
     ))
@@ -4190,14 +4191,23 @@ def check_and_reset_bills():
     # Use Singapore timezone
     singapore_now = datetime.now(SINGAPORE_TZ)
     current_time = singapore_now.strftime("%H:%M")
-    logger.info(f"Checking bill reset times at {current_time} (Singapore time)")
+    current_date = singapore_now.strftime("%Y-%m-%d")
     
-    # Check all authorized accounting groups, not just those with custom reset times
+    # Only log every 10 minutes to reduce spam, or when there are groups to check
+    if len(authorized_accounting_groups) > 0 and (current_time.endswith("0:00") or current_time.endswith("0:10") or current_time.endswith("0:20") or current_time.endswith("0:30") or current_time.endswith("0:40") or current_time.endswith("0:50")):
+        logger.info(f"Checking bill reset times at {current_time} (Singapore time) for {len(authorized_accounting_groups)} groups")
+    
+    # Check all authorized accounting groups
     for chat_id in authorized_accounting_groups:
+        # Ensure bill reset time exists, set default if missing
+        if chat_id not in bill_reset_times:
+            bill_reset_times[chat_id] = "00:00"
+            logger.info(f"Set default bill reset time 00:00 for group {chat_id}")
+        
         reset_time = bill_reset_times.get(chat_id, "00:00")  # Default to midnight
         
         if current_time == reset_time:
-            logger.info(f"Resetting bill for group {chat_id} at scheduled time {reset_time} (Singapore time)")
+            logger.info(f"🔄 Resetting bill for group {chat_id} at scheduled time {reset_time} (Singapore time) on {current_date}")
             archive_and_reset_bill(chat_id)
 
 def daily_cleanup():
@@ -4503,6 +4513,10 @@ def handle_authorize_accounting(update: Update, context: CallbackContext) -> Non
     # Authorize the group
     authorized_accounting_groups.add(chat_id)
     initialize_accounting_data(chat_id)
+    
+    # Ensure bill reset time is set to default if not exists
+    if chat_id not in bill_reset_times:
+        bill_reset_times[chat_id] = "00:00"
     
     # Store group name for future reference
     if update.effective_chat.title:
@@ -4950,10 +4964,10 @@ def handle_financial_audit(update: Update, context: CallbackContext) -> None:
         return
     
     try:
-        # Generate buttons for last 7 days
+        # Generate buttons for last 7 days (Singapore time)
         buttons = []
         for i in range(7):
-            date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+            date = (datetime.now(SINGAPORE_TZ) - timedelta(days=i)).strftime("%Y-%m-%d")
             day_name = "今日" if i == 0 else f"{i}天前"
             buttons.append([InlineKeyboardButton(f"{date} ({day_name})", callback_data=f"audit_date_{date}")])
         
