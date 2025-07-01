@@ -8,6 +8,7 @@ import threading
 from typing import Dict, Optional, List, Any, Set
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import pytz
 
 # Load environment variables from .env file if it exists (for local development)
 try:
@@ -27,6 +28,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Singapore timezone for all datetime operations
+SINGAPORE_TZ = pytz.timezone('Asia/Singapore')
 
 # Bot token from environment variable (required for Render)
 TOKEN = os.getenv("BOT_TOKEN")
@@ -449,20 +453,21 @@ def initialize_accounting_data(chat_id):
         save_config_data()
         logger.info(f"Initialized accounting data for group {chat_id}")
 
-def add_transaction(chat_id, amount, user_info, transaction_type='deposit'):
+def add_transaction(chat_id, amount, user_info, transaction_type='deposit', operator=None):
     """Add a transaction to the accounting system."""
     if chat_id not in accounting_data:
         initialize_accounting_data(chat_id)
     
-    # Get current timestamp
-    timestamp = datetime.now().strftime("%H:%M")
+    # Get current timestamp in Singapore time
+    timestamp = datetime.now(SINGAPORE_TZ).strftime("%H:%M")
     
     transaction = {
         'timestamp': timestamp,
         'amount': amount,
-        'user_info': user_info,
+        'user_info': user_info,  # Target user (who the transaction is for)
+        'operator': operator or user_info,  # Operator (who added the transaction)
         'type': transaction_type,  # 'deposit' or 'distribution'
-        'date': datetime.now().strftime("%Y-%m-%d")
+        'date': datetime.now(SINGAPORE_TZ).strftime("%Y-%m-%d")
     }
     
     if transaction_type == 'deposit':
@@ -479,7 +484,7 @@ def generate_bill(chat_id):
         return "❌ 此群组未初始化记账系统"
     
     data = accounting_data[chat_id]
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(SINGAPORE_TZ).strftime("%Y-%m-%d")
     
     # Filter today's transactions
     today_deposits = [t for t in data['transactions'] if t['date'] == today and t['amount'] > 0]
@@ -548,7 +553,7 @@ def is_summary_group_authorized(chat_id):
 
 def cleanup_old_records():
     """Remove records older than 7 days from all accounting data."""
-    cutoff_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    cutoff_date = (datetime.now(SINGAPORE_TZ) - timedelta(days=7)).strftime("%Y-%m-%d")
     
     for chat_id in accounting_data:
         data = accounting_data[chat_id]
@@ -574,7 +579,7 @@ def archive_and_reset_bill(chat_id):
         return
     
     data = accounting_data[chat_id]
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    yesterday = (datetime.now(SINGAPORE_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
     
     # Generate and archive yesterday's bill
     archived_bill = {
@@ -605,7 +610,7 @@ def archive_and_reset_bill(chat_id):
 
 def get_bill_for_date(chat_id, date):
     """Get bill for a specific date."""
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(SINGAPORE_TZ).strftime("%Y-%m-%d")
     
     if date == today:
         return generate_bill(chat_id)
@@ -669,7 +674,7 @@ def get_bill_for_date(chat_id, date):
 
 def generate_consolidated_summary(date):
     """Generate consolidated summary in the exact template format requested."""
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(SINGAPORE_TZ).strftime("%Y-%m-%d")
     
     summary_content = f"财务总结 - {date}\n{'='*50}\n\n"
     
@@ -708,17 +713,19 @@ def generate_consolidated_summary(date):
         if group_net_total <= 0:
             continue  # Skip if no net deposits
         
-        # Collect user totals for this group
+        # Collect user totals for this group (use operator for summary)
         group_user_totals = {}
         for transaction in deposits:
-            user = transaction['user_info']
+            # Use operator for summary (who added the transaction)
+            user = transaction.get('operator', transaction['user_info'])
             if user not in group_user_totals:
                 group_user_totals[user] = 0
             group_user_totals[user] += transaction['amount']
         
         # Subtract withdrawals from users (if any)
         for transaction in withdrawals:
-            user = transaction['user_info']
+            # Use operator for summary (who added the transaction)
+            user = transaction.get('operator', transaction['user_info'])
             if user not in group_user_totals:
                 group_user_totals[user] = 0
             group_user_totals[user] -= abs(transaction['amount'])
@@ -791,7 +798,7 @@ def generate_consolidated_summary(date):
         total_value_in_usd = sum(group['total']/group['exchange_rate'] for group in group_data_list)
         summary_content += f"总计: {total_all_deposits}/平均汇率={total_value_in_usd:.2f}\n"
     
-    summary_content += f"\n生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    summary_content += f"\n生成时间: {datetime.now(SINGAPORE_TZ).strftime('%Y-%m-%d %H:%M:%S')} (新加坡时间)"
     
     return summary_content
 
@@ -4180,15 +4187,17 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
 def check_and_reset_bills():
     """Check if any bills need to be reset based on their scheduled times."""
-    current_time = datetime.now().strftime("%H:%M")
-    logger.info(f"Checking bill reset times at {current_time}")
+    # Use Singapore timezone
+    singapore_now = datetime.now(SINGAPORE_TZ)
+    current_time = singapore_now.strftime("%H:%M")
+    logger.info(f"Checking bill reset times at {current_time} (Singapore time)")
     
     # Check all authorized accounting groups, not just those with custom reset times
     for chat_id in authorized_accounting_groups:
         reset_time = bill_reset_times.get(chat_id, "00:00")  # Default to midnight
         
         if current_time == reset_time:
-            logger.info(f"Resetting bill for group {chat_id} at scheduled time {reset_time}")
+            logger.info(f"Resetting bill for group {chat_id} at scheduled time {reset_time} (Singapore time)")
             archive_and_reset_bill(chat_id)
 
 def daily_cleanup():
@@ -4206,12 +4215,12 @@ def start_scheduler():
                 # Check bill resets every minute
                 check_and_reset_bills()
                 
-                # Check for daily cleanup at 01:00
-                current_time = datetime.now()
+                # Check for daily cleanup at 01:00 Singapore time
+                current_time = datetime.now(SINGAPORE_TZ)
                 current_date = current_time.strftime("%Y-%m-%d")
                 current_hour_minute = current_time.strftime("%H:%M")
                 
-                # Run daily cleanup at 01:00 once per day
+                # Run daily cleanup at 01:00 Singapore time once per day
                 if current_hour_minute == "01:00" and last_cleanup_date != current_date:
                     daily_cleanup()
                     last_cleanup_date = current_date
@@ -4545,8 +4554,12 @@ def handle_accounting_add_amount(update: Update, context: CallbackContext) -> No
         user_info = ""
         if len(parts) > 1:
             # User provided user info in message (+100 @username)
-            user_info = parts[1]
-        elif update.message.reply_to_message:
+            # Filter to only accept valid user info (starts with @ or is a name)
+            potential_user = parts[1].strip()
+            if potential_user.startswith('@') or (potential_user and not potential_user.replace('.', '').replace('-', '').isdigit()):
+                user_info = potential_user
+        
+        if not user_info and update.message.reply_to_message:
             # Get user info from reply
             replied_user = update.message.reply_to_message.from_user
             if replied_user.username:
@@ -4559,8 +4572,9 @@ def handle_accounting_add_amount(update: Update, context: CallbackContext) -> No
             group_names[chat_id] = update.effective_chat.title
             save_config_data()
         
-        # Add transaction
-        add_transaction(chat_id, amount, user_info, 'deposit')
+        # Add transaction - track operator (who added it) vs target user
+        operator = f"@{update.effective_user.username}" if update.effective_user.username else update.effective_user.first_name
+        add_transaction(chat_id, amount, user_info, 'deposit', operator)
         
         # Generate and send updated bill with export button
         bill = generate_bill(chat_id)
@@ -4610,8 +4624,12 @@ def handle_accounting_subtract_amount(update: Update, context: CallbackContext) 
         user_info = ""
         if len(parts) > 1:
             # User provided user info in message (-100 @username)
-            user_info = parts[1]
-        elif update.message.reply_to_message:
+            # Filter to only accept valid user info (starts with @ or is a name)
+            potential_user = parts[1].strip()
+            if potential_user.startswith('@') or (potential_user and not potential_user.replace('.', '').replace('-', '').isdigit()):
+                user_info = potential_user
+        
+        if not user_info and update.message.reply_to_message:
             # Get user info from reply
             replied_user = update.message.reply_to_message.from_user
             if replied_user.username:
@@ -4624,8 +4642,9 @@ def handle_accounting_subtract_amount(update: Update, context: CallbackContext) 
             group_names[chat_id] = update.effective_chat.title
             save_config_data()
         
-        # Add negative transaction
-        add_transaction(chat_id, -amount, user_info, 'deposit')
+        # Add negative transaction - track operator (who added it) vs target user
+        operator = f"@{update.effective_user.username}" if update.effective_user.username else update.effective_user.first_name
+        add_transaction(chat_id, -amount, user_info, 'deposit', operator)
         
         # Generate and send updated bill with export button
         bill = generate_bill(chat_id)
@@ -4675,8 +4694,12 @@ def handle_accounting_distribute(update: Update, context: CallbackContext) -> No
         user_info = ""
         if len(parts) > 1:
             # User provided user info in message (下发100 @username)
-            user_info = parts[1]
-        elif update.message.reply_to_message:
+            # Filter to only accept valid user info (starts with @ or is a name)
+            potential_user = parts[1].strip()
+            if potential_user.startswith('@') or (potential_user and not potential_user.replace('.', '').replace('-', '').isdigit()):
+                user_info = potential_user
+        
+        if not user_info and update.message.reply_to_message:
             # Get user info from reply
             replied_user = update.message.reply_to_message.from_user
             if replied_user.username:
@@ -4689,8 +4712,9 @@ def handle_accounting_distribute(update: Update, context: CallbackContext) -> No
             group_names[chat_id] = update.effective_chat.title
             save_config_data()
         
-        # Add distribution
-        add_transaction(chat_id, amount, user_info, 'distribution')
+        # Add distribution - track operator (who added it) vs target user
+        operator = f"@{update.effective_user.username}" if update.effective_user.username else update.effective_user.first_name
+        add_transaction(chat_id, amount, user_info, 'distribution', operator)
         
         # Generate and send updated bill with export button
         bill = generate_bill(chat_id)
@@ -4861,7 +4885,7 @@ def handle_export_yesterday_bill(update: Update, context: CallbackContext) -> No
         return
     
     try:
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        yesterday = (datetime.now(SINGAPORE_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
         bill_content = get_bill_for_date(chat_id, yesterday)
         
         if bill_content.startswith("❌"):
