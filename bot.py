@@ -79,6 +79,7 @@ ACCOUNTING_DATA_FILE = "accounting_data.json"
 AUTHORIZED_SUMMARY_GROUPS_FILE = "authorized_summary_groups.json"
 BILL_RESET_TIMES_FILE = "bill_reset_times.json"
 ARCHIVED_BILLS_FILE = "archived_bills.json"
+GROUP_NAMES_FILE = "group_names.json"
 
 # Message IDs mapping for forwarded messages
 forwarded_msgs: Dict[str, Dict] = {}
@@ -105,8 +106,9 @@ group_a_reply_forwards: Dict[int, Dict] = {}  # Format: {group_b_msg_id: {group_
 authorized_accounting_groups: Set[int] = set()  # Groups authorized to use accounting bot
 accounting_data: Dict[int, Dict] = {}  # Format: {chat_id: {transactions: [], exchange_rate: 10.8, distributions: [], fee_rate: 0.0}}
 authorized_summary_groups: Set[int] = set()  # Groups that can use 财务查账
-bill_reset_times: Dict[int, str] = {}  # chat_id -> time in HH:MM format
+bill_reset_times: Dict[int, str] = {}  # chat_id -> time in HH:MM format (default: 00:00)
 archived_bills: Dict[int, Dict] = {}  # chat_id -> {date: bill_data}
+group_names: Dict[int, str] = {}  # chat_id -> group_name for display purposes
 
 # Function to safely send messages with retry logic
 def safe_send_message(context, chat_id, text, reply_to_message_id=None, max_retries=3, retry_delay=2):
@@ -258,11 +260,19 @@ def save_config_data():
             logger.info(f"Saved archived bills to file")
     except Exception as e:
         logger.error(f"Error saving archived bills: {e}")
+    
+    # Save Group Names
+    try:
+        with open(GROUP_NAMES_FILE, 'w') as f:
+            json.dump(group_names, f, indent=2)
+            logger.info(f"Saved group names to file")
+    except Exception as e:
+        logger.error(f"Error saving group names: {e}")
 
 # Function to load all configuration data
 def load_config_data():
     """Load all configuration data from files."""
-    global GROUP_A_IDS, GROUP_B_IDS, GROUP_ADMINS, FORWARDING_ENABLED, group_b_percentages, GROUP_B_CLICK_MODE, group_b_amount_ranges, group_a_reply_forwards, authorized_accounting_groups, accounting_data, authorized_summary_groups, bill_reset_times, archived_bills
+    global GROUP_A_IDS, GROUP_B_IDS, GROUP_ADMINS, FORWARDING_ENABLED, group_b_percentages, GROUP_B_CLICK_MODE, group_b_amount_ranges, group_a_reply_forwards, authorized_accounting_groups, accounting_data, authorized_summary_groups, bill_reset_times, archived_bills, group_names
     
     # Load Group A IDs
     if os.path.exists(GROUP_A_IDS_FILE):
@@ -408,6 +418,19 @@ def load_config_data():
         except Exception as e:
             logger.error(f"Error loading archived bills: {e}")
             archived_bills = {}
+    
+    # Load Group Names
+    if os.path.exists(GROUP_NAMES_FILE):
+        try:
+            with open(GROUP_NAMES_FILE, 'r') as f:
+                group_names_json = json.load(f)
+                group_names = {int(chat_id): name for chat_id, name in group_names_json.items()}
+                logger.info(f"Loaded group names from file: {len(group_names)} groups")
+        except Exception as e:
+            logger.error(f"Error loading group names: {e}")
+            group_names = {}
+    else:
+        group_names = {}
 
 # Accounting bot functions
 def initialize_accounting_data(chat_id):
@@ -701,14 +724,15 @@ def generate_consolidated_summary(date):
             group_user_totals[user] -= abs(transaction['amount'])
         
         # Only keep users with positive amounts
-        group_user_totals = {user: amount for user, amount in group_user_totals.items() if amount > 0}
+        group_user_totals = {user: amount for user, amount in group_user_totals.items() if amount > 0 and user.strip()}
         
-        if not group_user_totals:
-            continue
+        # Get group name
+        group_name = group_names.get(group_id, f"群组 {abs(group_id) % 10000}")
         
         # Store group data
         group_data_list.append({
             'id': group_id,
+            'name': group_name,
             'total': group_net_total,
             'exchange_rate': exchange_rate,
             'users': group_user_totals
@@ -725,27 +749,26 @@ def generate_consolidated_summary(date):
     if not group_data_list:
         return f"财务总结 - {date}\n{'='*50}\n\n❌ 没有找到该日期的有效记录"
     
-    # Generate group sections (using template format)
-    for i, group_data in enumerate(group_data_list, 1):
-        group_id = group_data['id']
+    # Generate group sections (using Chinese format with group names)
+    for group_data in group_data_list:
+        group_name = group_data['name']
         group_total = group_data['total']
         exchange_rate = group_data['exchange_rate']
         users = group_data['users']
         
-        summary_content += f"group {i} : {group_total}/{exchange_rate} = {group_total/exchange_rate:.2f}\n"
+        summary_content += f"{group_name} : {group_total}/{exchange_rate} = {group_total/exchange_rate:.2f}\n"
         
-        # Add users for this group
+        # Add users for this group (only if they exist)
         for user, amount in sorted(users.items(), key=lambda x: x[1], reverse=True):
             summary_content += f"{user}: {amount}/{exchange_rate}= {amount/exchange_rate:.2f}\n"
         
         summary_content += "\n"
     
     # Generate summary of users (cross-group totals)
-    summary_content += "summary of user\n"
+    summary_content += "用户汇总\n"
     
     if all_user_totals:
-        # Use the first group's exchange rate for user summary (or calculate weighted average)
-        # For simplicity, using the first group's rate, but could be enhanced
+        # Use the first group's exchange rate for user summary
         summary_exchange_rate = group_data_list[0]['exchange_rate'] if group_data_list else 10.8
         
         for user, total in sorted(all_user_totals.items(), key=lambda x: x[1], reverse=True):
@@ -754,18 +777,19 @@ def generate_consolidated_summary(date):
     summary_content += "\n"
     
     # Generate summary of bill (group totals + overall total)
-    summary_content += "summary of bill\n"
+    summary_content += "账单汇总\n"
     
-    for i, group_data in enumerate(group_data_list, 1):
+    for group_data in group_data_list:
+        group_name = group_data['name']
         group_total = group_data['total']
         exchange_rate = group_data['exchange_rate']
-        summary_content += f"group {i}: {group_total}/{exchange_rate}={group_total/exchange_rate:.2f}\n"
+        summary_content += f"{group_name}: {group_total}/{exchange_rate}={group_total/exchange_rate:.2f}\n"
     
     # Calculate overall total using weighted average exchange rate
     if group_data_list:
         # Use weighted average exchange rate for final total
         total_value_in_usd = sum(group['total']/group['exchange_rate'] for group in group_data_list)
-        summary_content += f"total: {total_all_deposits}/avg={total_value_in_usd:.2f}\n"
+        summary_content += f"总计: {total_all_deposits}/平均汇率={total_value_in_usd:.2f}\n"
     
     summary_content += f"\n生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     
@@ -2269,8 +2293,8 @@ def button_callback(update: Update, context: CallbackContext) -> None:
             buttons = []
             
             for group_id in authorized_accounting_groups:
-                # Try to get group name (you may want to store group names separately)
-                group_name = f"群组 {group_id}"
+                # Get group name from stored names
+                group_name = group_names.get(group_id, f"群组 {abs(group_id) % 10000}")
                 buttons.append([InlineKeyboardButton(group_name, callback_data=f"audit_export_{selected_date}_{group_id}")])
             
             # Add summary button
@@ -2296,8 +2320,9 @@ def button_callback(update: Update, context: CallbackContext) -> None:
                 bill_content = get_bill_for_date(group_id, date)
                 filename = f"bill_{group_id}_{date}.txt"
                 
+                group_name = group_names.get(group_id, f"群组 {abs(group_id) % 10000}")
                 export_bill_as_file(context, query.message.chat_id, bill_content, filename)
-                query.answer(f"群组 {group_id} 的 {date} 账单已导出")
+                query.answer(f"{group_name} 的 {date} 账单已导出")
                 
             except Exception as e:
                 logger.error(f"Error exporting group bill: {e}")
@@ -4149,8 +4174,9 @@ def check_and_reset_bills():
     current_time = datetime.now().strftime("%H:%M")
     logger.info(f"Checking bill reset times at {current_time}")
     
-    for chat_id in list(bill_reset_times.keys()):
-        reset_time = bill_reset_times.get(chat_id, "00:00")
+    # Check all authorized accounting groups, not just those with custom reset times
+    for chat_id in authorized_accounting_groups:
+        reset_time = bill_reset_times.get(chat_id, "00:00")  # Default to midnight
         
         if current_time == reset_time:
             logger.info(f"Resetting bill for group {chat_id} at scheduled time {reset_time}")
@@ -4459,16 +4485,23 @@ def handle_authorize_accounting(update: Update, context: CallbackContext) -> Non
     # Authorize the group
     authorized_accounting_groups.add(chat_id)
     initialize_accounting_data(chat_id)
+    
+    # Store group name for future reference
+    if update.effective_chat.title:
+        group_names[chat_id] = update.effective_chat.title
+    
     save_config_data()
     
     update.message.reply_text(
         "✅ 群组已授权使用记账机器人！\n\n"
         "📋 可用命令：\n"
-        "• +金额 用户信息 - 添加入款\n"
-        "• -金额 用户信息 - 添加出款\n"
-        "• 下发金额 用户信息 - 记录下发\n"
+        "• +金额 - 添加入款（回复消息时会记录用户）\n"
+        "• -金额 - 添加出款（回复消息时会记录用户）\n"
+        "• 下发金额 - 记录下发（回复消息时会记录用户）\n"
         "• 设置汇率 数值 - 设置汇率\n"
-        "• 账单 - 查看当前账单"
+        "• 账单 - 查看当前账单\n"
+        "• 设置账单时间 HH:MM - 设置每日重置时间\n"
+        "• 导出昨日账单 - 导出昨天的账单文件"
     )
     logger.info(f"Group {chat_id} authorized for accounting bot by admin {user_id}")
 
@@ -4487,21 +4520,28 @@ def handle_accounting_add_amount(update: Update, context: CallbackContext) -> No
         update.message.reply_text("⚠️ 只有操作人可以使用记账功能。")
         return
     
-    # Parse +amount user_info format
+    # Parse +amount format (no user info required)
     if not message_text.startswith('+'):
         return
     
     try:
-        # Remove + and split into amount and user info
+        # Remove + and get amount
         content = message_text[1:].strip()
-        parts = content.split(' ', 1)
+        amount = float(content)
         
-        if len(parts) < 2:
-            update.message.reply_text("❌ 格式错误。请使用：+金额 用户信息")
-            return
+        # Get user info from reply if replying to someone
+        user_info = ""
+        if update.message.reply_to_message:
+            replied_user = update.message.reply_to_message.from_user
+            if replied_user.username:
+                user_info = f"@{replied_user.username}"
+            else:
+                user_info = replied_user.first_name or "未知用户"
         
-        amount = float(parts[0])
-        user_info = parts[1]
+        # Store group name for future reference
+        if chat_id not in group_names and update.effective_chat.title:
+            group_names[chat_id] = update.effective_chat.title
+            save_config_data()
         
         # Add transaction
         add_transaction(chat_id, amount, user_info, 'deposit')
@@ -4533,21 +4573,28 @@ def handle_accounting_subtract_amount(update: Update, context: CallbackContext) 
         update.message.reply_text("⚠️ 只有操作人可以使用记账功能。")
         return
     
-    # Parse -amount user_info format
+    # Parse -amount format (no user info required)
     if not message_text.startswith('-'):
         return
     
     try:
-        # Remove - and split into amount and user info
+        # Remove - and get amount
         content = message_text[1:].strip()
-        parts = content.split(' ', 1)
+        amount = float(content)
         
-        if len(parts) < 2:
-            update.message.reply_text("❌ 格式错误。请使用：-金额 用户信息")
-            return
+        # Get user info from reply if replying to someone
+        user_info = ""
+        if update.message.reply_to_message:
+            replied_user = update.message.reply_to_message.from_user
+            if replied_user.username:
+                user_info = f"@{replied_user.username}"
+            else:
+                user_info = replied_user.first_name or "未知用户"
         
-        amount = float(parts[0])
-        user_info = parts[1]
+        # Store group name for future reference
+        if chat_id not in group_names and update.effective_chat.title:
+            group_names[chat_id] = update.effective_chat.title
+            save_config_data()
         
         # Add negative transaction
         add_transaction(chat_id, -amount, user_info, 'deposit')
@@ -4579,21 +4626,28 @@ def handle_accounting_distribute(update: Update, context: CallbackContext) -> No
         update.message.reply_text("⚠️ 只有操作人可以使用记账功能。")
         return
     
-    # Parse 下发amount user_info format
+    # Parse 下发amount format (no user info required)
     if not message_text.startswith('下发'):
         return
     
     try:
-        # Remove 下发 and split into amount and user info
+        # Remove 下发 and get amount
         content = message_text[2:].strip()
-        parts = content.split(' ', 1)
+        amount = float(content)
         
-        if len(parts) < 2:
-            update.message.reply_text("❌ 格式错误。请使用：下发金额 用户信息")
-            return
+        # Get user info from reply if replying to someone
+        user_info = ""
+        if update.message.reply_to_message:
+            replied_user = update.message.reply_to_message.from_user
+            if replied_user.username:
+                user_info = f"@{replied_user.username}"
+            else:
+                user_info = replied_user.first_name or "未知用户"
         
-        amount = float(parts[0])
-        user_info = parts[1]
+        # Store group name for future reference
+        if chat_id not in group_names and update.effective_chat.title:
+            group_names[chat_id] = update.effective_chat.title
+            save_config_data()
         
         # Add distribution
         add_transaction(chat_id, amount, user_info, 'distribution')
