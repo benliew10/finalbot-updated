@@ -831,7 +831,7 @@ def is_global_admin(user_id):
     """Check if user is a global admin."""
     return user_id in GLOBAL_ADMINS
 
-def is_amount_within_group_b_range(group_b_id: int, amount: int) -> bool:
+def is_amount_within_group_b_range(group_b_id: int, amount: float) -> bool:
     """Check if the amount is within the allowed range for a specific Group B."""
     if group_b_id not in group_b_amount_ranges:
         # If no range is set for this Group B, allow all amounts (preserve original behavior)
@@ -1188,7 +1188,7 @@ def handle_group_a_message(update: Update, context: CallbackContext) -> None:
         return
     
     # Match any of the formats:
-    # - Just a number
+    # - Just a number (supports decimals like 100.50)
     # - number+群 or number 群
     # - 群+number or 群 number
     # - 微信+number or 微信 number 
@@ -1196,15 +1196,15 @@ def handle_group_a_message(update: Update, context: CallbackContext) -> None:
     # - 微信群+number or 微信群 number
     # - number+微信群 or number 微信群
     patterns = [
-        r'^(\d+)$',  # Just a number
-        r'^(\d+)\s*群$',  # number+群
-        r'^群\s*(\d+)$',  # 群+number
-        r'^微信\s*(\d+)$',  # 微信+number
-        r'^(\d+)\s*微信$',  # number+微信
-        r'^微信群\s*(\d+)$',  # 微信群+number
-        r'^(\d+)\s*微信群$',  # number+微信群
-        r'^微信\s*群\s*(\d+)$',  # 微信 群 number (with spaces)
-        r'^(\d+)\s*微信\s*群$'   # number 微信 群 (with spaces)
+        r'^(\d+(?:\.\d+)?)$',  # Just a number (supports decimals)
+        r'^(\d+(?:\.\d+)?)\s*群$',  # number+群 (supports decimals)
+        r'^群\s*(\d+(?:\.\d+)?)$',  # 群+number (supports decimals)
+        r'^微信\s*(\d+(?:\.\d+)?)$',  # 微信+number (supports decimals)
+        r'^(\d+(?:\.\d+)?)\s*微信$',  # number+微信 (supports decimals)
+        r'^微信群\s*(\d+(?:\.\d+)?)$',  # 微信群+number (supports decimals)
+        r'^(\d+(?:\.\d+)?)\s*微信群$',  # number+微信群 (supports decimals)
+        r'^微信\s*群\s*(\d+(?:\.\d+)?)$',  # 微信 群 number (supports decimals)
+        r'^(\d+(?:\.\d+)?)\s*微信\s*群$'   # number 微信 群 (supports decimals)
     ]
     
     amount = None
@@ -1221,8 +1221,8 @@ def handle_group_a_message(update: Update, context: CallbackContext) -> None:
     
     # Check if the number is between 20 and 5000 (inclusive)
     try:
-        amount_int = int(amount)
-        if amount_int < 20 or amount_int > 5000:
+        amount_float = float(amount)
+        if amount_float < 20 or amount_float > 5000:
             logger.info(f"Number {amount} is outside the allowed range (20-5000).")
             return
     except ValueError:
@@ -1277,10 +1277,10 @@ def handle_group_a_message(update: Update, context: CallbackContext) -> None:
     logger.info(f"Image metadata: {metadata}")
     
     # FIRST: Find all Group B chats that can handle this amount
-    valid_group_bs = get_group_b_for_amount(amount_int)
+    valid_group_bs = get_group_b_for_amount(amount_float)
     
     if not valid_group_bs:
-        logger.info(f"No Group B chats can handle amount {amount_int}. Remaining completely silent.")
+        logger.info(f"No Group B chats can handle amount {amount_float}. Remaining completely silent.")
         # Set image status back to open since we're not processing it
         db.set_image_status(image['image_id'], "open")
         return
@@ -1294,9 +1294,9 @@ def handle_group_a_message(update: Update, context: CallbackContext) -> None:
             existing_group_b_id = int(metadata['source_group_b_id'])
             if existing_group_b_id in valid_group_bs:
                 target_group_b_id = existing_group_b_id
-                logger.info(f"Using existing Group B mapping {target_group_b_id} (valid for amount {amount_int})")
+                logger.info(f"Using existing Group B mapping {target_group_b_id} (valid for amount {amount_float})")
             else:
-                logger.info(f"Existing Group B mapping {existing_group_b_id} cannot handle amount {amount_int}")
+                logger.info(f"Existing Group B mapping {existing_group_b_id} cannot handle amount {amount_float}")
         except (ValueError, TypeError) as e:
             logger.error(f"Error reading existing Group B mapping: {e}")
     
@@ -1476,7 +1476,7 @@ def handle_approval(update: Update, context: CallbackContext) -> None:
             metadata = image.get('metadata', {}) if image else {}
             
             # Find valid Group B chats for this amount
-            valid_group_bs = get_group_b_for_amount(int(amount))
+            valid_group_bs = get_group_b_for_amount(float(amount))
             
             if not valid_group_bs:
                 logger.info(f"No Group B chats can handle amount {amount}. Remaining silent.")
