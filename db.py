@@ -981,4 +981,139 @@ def get_queue_status() -> Dict[str, Any]:
         
     except Exception as e:
         logger.error(f"Error getting queue status: {e}")
-        return {"error": str(e)} 
+        return {"error": str(e)}
+
+def clear_images_by_user(user_id: int, group_b_id: int) -> bool:
+    """Delete images set by a specific user in a specific Group B."""
+    try:
+        init_db()
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Check if metadata column exists
+        cursor.execute("PRAGMA table_info(images)")
+        columns = [col[1] for col in cursor.fetchall()]
+        
+        if 'metadata' not in columns:
+            logger.warning("Cannot filter by user as metadata column does not exist")
+            conn.close()
+            return False
+        
+        # Count total images before deletion
+        cursor.execute("SELECT COUNT(*) FROM images")
+        total_count = cursor.fetchone()[0]
+        logger.info(f"Total images in database before user deletion: {total_count}")
+        
+        # Get all images first
+        cursor.execute("SELECT image_id, metadata FROM images")
+        rows = cursor.fetchall()
+        
+        if not rows:
+            logger.info("No images available to clear")
+            conn.close()
+            return True
+        
+        # Find images to delete by checking their metadata
+        images_to_delete = []
+        for row in rows:
+            image_id, metadata_str = row
+            if metadata_str:
+                try:
+                    metadata = json.loads(metadata_str)
+                    if isinstance(metadata, dict):
+                        # Check if this image was set by the specified user in the specified group
+                        set_by_user_id = metadata.get('set_by_user_id')
+                        source_group_b_id = metadata.get('source_group_b_id')
+                        
+                        if (set_by_user_id and int(set_by_user_id) == int(user_id) and 
+                            source_group_b_id and int(source_group_b_id) == int(group_b_id)):
+                            images_to_delete.append(image_id)
+                            logger.info(f"Will delete image {image_id} set by user {user_id}")
+                except (ValueError, TypeError, json.JSONDecodeError) as e:
+                    logger.error(f"Error processing metadata for image {image_id}: {e}")
+            else:
+                logger.info(f"Image {image_id} has no metadata")
+        
+        # Delete the matching images
+        if images_to_delete:
+            placeholders = ', '.join(['?'] * len(images_to_delete))
+            cursor.execute(f"DELETE FROM images WHERE image_id IN ({placeholders})", images_to_delete)
+            conn.commit()
+            
+            # Verify deletion by counting remaining images
+            cursor.execute("SELECT COUNT(*) FROM images")
+            remaining_count = cursor.fetchone()[0]
+            deleted_count = total_count - remaining_count
+            
+            logger.info(f"Database had {total_count} images, deleted {deleted_count}, {remaining_count} remaining")
+            logger.info(f"Deleted {len(images_to_delete)} images set by user {user_id} in Group B {group_b_id}")
+        else:
+            logger.info(f"No images found set by user {user_id} in Group B {group_b_id}")
+        
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Database error in clear_images_by_user: {e}")
+        return False
+
+def delete_image_by_number_and_user(number: int, user_id: int, group_b_id: int) -> bool:
+    """Delete a specific image by its number set by a specific user."""
+    try:
+        init_db()
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Check if metadata column exists
+        cursor.execute("PRAGMA table_info(images)")
+        columns = [col[1] for col in cursor.fetchall()]
+        
+        if 'metadata' not in columns:
+            logger.warning("Cannot filter by user as metadata column does not exist")
+            conn.close()
+            return False
+        
+        # Get all images matching this number
+        cursor.execute("SELECT image_id, metadata FROM images WHERE number = ?", (number,))
+        rows = cursor.fetchall()
+        
+        if not rows:
+            logger.info(f"No images found with number {number}")
+            conn.close()
+            return False
+        
+        # Find images to delete by checking their metadata for matching user and Group B ID
+        images_to_delete = []
+        for row in rows:
+            image_id, metadata_str = row
+            if metadata_str:
+                try:
+                    metadata = json.loads(metadata_str)
+                    if isinstance(metadata, dict):
+                        set_by_user_id = metadata.get('set_by_user_id')
+                        source_group_b_id = metadata.get('source_group_b_id')
+                        
+                        if (set_by_user_id and int(set_by_user_id) == int(user_id) and 
+                            source_group_b_id and int(source_group_b_id) == int(group_b_id)):
+                            images_to_delete.append(image_id)
+                            logger.info(f"Will delete image {image_id} with number {number} set by user {user_id}")
+                except (ValueError, TypeError, json.JSONDecodeError) as e:
+                    logger.error(f"Error processing metadata for image {image_id}: {e}")
+            else:
+                logger.info(f"Image {image_id} has no metadata")
+        
+        # Delete the matching images
+        if images_to_delete:
+            placeholders = ', '.join(['?'] * len(images_to_delete))
+            cursor.execute(f"DELETE FROM images WHERE image_id IN ({placeholders})", images_to_delete)
+            conn.commit()
+            
+            logger.info(f"Deleted {len(images_to_delete)} images with number {number} set by user {user_id} in Group B {group_b_id}")
+            conn.close()
+            return True
+        else:
+            logger.info(f"No matching images found with number {number} set by user {user_id} in Group B {group_b_id}")
+            conn.close()
+            return False
+    except Exception as e:
+        logger.error(f"Database error in delete_image_by_number_and_user: {e}")
+        return False 

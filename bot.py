@@ -973,8 +973,9 @@ def help_command(update: Update, context: CallbackContext) -> None:
             help_text += """
 *Group B Admin Commands:*
 设置点击模式 - Toggle click mode (single button to release images)
-重置群码 - Reset all images for this group
-重置群{number} - Reset specific image by number
+重置群码 - Reset images you set in this group
+重置群{number} - Reset specific image you set by number
+重置全部群码 - Reset ALL images in this group (admin only)
 设置群 {number} - Set image with group number (reply to image)
 """
 
@@ -1366,26 +1367,37 @@ def handle_group_a_message(update: Update, context: CallbackContext) -> None:
             is_click_mode = GROUP_B_CLICK_MODE.get(target_group_b_id, False)
             logger.info(f"Group B {target_group_b_id} click mode: {is_click_mode}")
             
+            # Get user mention who set the image
+            user_mention = ""
+            if 'metadata' in image and isinstance(image['metadata'], dict):
+                set_by_username = image['metadata'].get('set_by_username')
+                set_by_user_name = image['metadata'].get('set_by_user_name', '')
+                
+                if set_by_username:
+                    user_mention = f" @{set_by_username}"
+                elif set_by_user_name:
+                    user_mention = f" {set_by_user_name}"
+            
             # Prepare message text based on mode
             if is_click_mode:
-                # Click mode: Make group name clickable to shorten message
+                # Click mode: Make group name clickable to shorten message, include username
                 group_a_name, message_link = create_group_a_info(context, chat_id, sent_msg.message_id)
                 
                 if message_link:
-                    # Make the group name itself clickable - shorter and cleaner
+                    # Make the group name itself clickable - shorter and cleaner, with username
                     message_text = (f"💰 金额：{amount}\n"
-                                  f"🔢 群：{image['number']}\n"
+                                  f"🔢 群：{image['number']}{user_mention}\n"
                                   f"📍 [{group_a_name}]({message_link})")
-                    logger.info(f"Click mode message with clickable group name: {message_link}")
+                    logger.info(f"Click mode message with clickable group name and username: {message_link}")
                 else:
-                    # Fallback to basic message if link creation failed
+                    # Fallback to basic message if link creation failed, with username
                     message_text = (f"💰 金额：{amount}\n"
-                                  f"🔢 群：{image['number']}\n"
+                                  f"🔢 群：{image['number']}{user_mention}\n"
                                   f"📍 {group_a_name}")
-                    logger.warning("Message link creation failed, using fallback format")
+                    logger.warning("Message link creation failed, using fallback format with username")
             else:
-                # Normal mode: Include the ❌ text
-                message_text = f"💰 金额：{amount}\n🔢 群：{image['number']}\n\n❌ 如果会员10分钟没进群请回复0"
+                # Normal mode: Include the ❌ text and username
+                message_text = f"💰 金额：{amount}\n🔢 群：{image['number']}{user_mention}\n\n❌ 如果会员10分钟没进群请回复0"
             
             if is_click_mode:
                 # Send message with button in click mode
@@ -2845,7 +2857,8 @@ def handle_set_group_image(update: Update, context: CallbackContext) -> None:
     if GROUP_A_IDS:
         target_group_a_id = next(iter(GROUP_A_IDS))
     else:
-        target_group_a_id = GROUP_A_ID
+        logger.error("No Group A configured!")
+        return  # Exit early if no Group A is configured
     
     logger.info(f"Setting image target Group A ID: {target_group_a_id}")
     
@@ -3165,7 +3178,7 @@ def admin_list_command(update: Update, context: CallbackContext) -> None:
 
 # Add this function to handle group image reset
 def handle_group_b_reset_images(update: Update, context: CallbackContext) -> None:
-    """Handle the command to reset all images in Group B."""
+    """Handle the command to reset images set by the user in Group B."""
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     message_text = update.message.text.strip()
@@ -3185,14 +3198,14 @@ def handle_group_b_reset_images(update: Update, context: CallbackContext) -> Non
         update.message.reply_text("只有群操作人或全局管理员可以重置群码。")
         return
     
-    logger.info(f"Admin {user_id} is resetting images in Group B: {chat_id}")
+    logger.info(f"Admin {user_id} is resetting their own images in Group B: {chat_id}")
     
-    # Get current image count for this specific Group B for reporting
+    # Get current image count for this user in this specific Group B for reporting
     all_images = db.get_all_images()
     logger.info(f"Total images in database before reset: {len(all_images)}")
     
-    # Count images associated with this Group B
-    group_b_images = []
+    # Count images set by this user in this Group B
+    user_images = []
     if all_images:
         for img in all_images:
             metadata = img.get('metadata', {})
@@ -3202,37 +3215,47 @@ def handle_group_b_reset_images(update: Update, context: CallbackContext) -> Non
                 except:
                     metadata = {}
                     
-            if isinstance(metadata, dict) and 'source_group_b_id' in metadata:
+            if isinstance(metadata, dict) and 'source_group_b_id' in metadata and 'set_by_user_id' in metadata:
                 try:
-                    if int(metadata['source_group_b_id']) == int(chat_id):
-                        group_b_images.append(img)
+                    if (int(metadata['source_group_b_id']) == int(chat_id) and 
+                        int(metadata['set_by_user_id']) == int(user_id)):
+                        user_images.append(img)
                 except (ValueError, TypeError) as e:
-                    logger.error(f"Error comparing Group B IDs: {e}")
+                    logger.error(f"Error comparing Group B IDs or user IDs: {e}")
     
-    image_count = len(group_b_images)
-    logger.info(f"Found {image_count} images associated with Group B {chat_id}")
+    user_image_count = len(user_images)
+    logger.info(f"Found {user_image_count} images set by user {user_id} in Group B {chat_id}")
     
-    # Backup the existing images before deleting
-    # Backup functionality removed
-    
-    # Delete only images from this Group B
+    # Delete only images set by this user from this Group B
     try:
-        # Use our new function to delete only images from this Group B
-        success = db.clear_images_by_group_b(chat_id)
+        # Use our new function to delete only images set by this user in this Group B
+        success = db.clear_images_by_user(user_id, chat_id)
         
-        # Also clear related message mappings for this Group B
+        # Also clear related message mappings for images set by this user
         global forwarded_msgs, group_b_responses
         
-        # Filter out messages related to this Group B
+        # Filter out messages related to images set by this user
         if forwarded_msgs:
             # Create a new dict to avoid changing size during iteration
             new_forwarded_msgs = {}
             for msg_id, data in forwarded_msgs.items():
-                # If the message was sent to this Group B, remove it
-                if 'group_b_chat_id' in data and int(data['group_b_chat_id']) != int(chat_id):
+                # Check if this message corresponds to an image set by this user
+                should_keep = True
+                if 'image_id' in data:
+                    try:
+                        img = db.get_image_by_id(data['image_id'])
+                        if img and 'metadata' in img and isinstance(img['metadata'], dict):
+                            set_by_user_id = img['metadata'].get('set_by_user_id')
+                            source_group_b_id = img['metadata'].get('source_group_b_id')
+                            if (set_by_user_id and int(set_by_user_id) == int(user_id) and
+                                source_group_b_id and int(source_group_b_id) == int(chat_id)):
+                                should_keep = False
+                                logger.info(f"Removing forwarded message mapping for {msg_id} (user's image)")
+                    except Exception as e:
+                        logger.error(f"Error checking message mapping: {e}")
+                
+                if should_keep:
                     new_forwarded_msgs[msg_id] = data
-                else:
-                    logger.info(f"Removing forwarded message mapping for {msg_id}")
             
             forwarded_msgs = new_forwarded_msgs
         
@@ -3240,15 +3263,21 @@ def handle_group_b_reset_images(update: Update, context: CallbackContext) -> Non
         if group_b_responses:
             new_group_b_responses = {}
             for msg_id, data in group_b_responses.items():
-                if 'chat_id' in data and int(data['chat_id']) != int(chat_id):
+                # Keep responses that are not from this user in this group
+                should_keep = True
+                if ('chat_id' in data and int(data['chat_id']) == int(chat_id) and
+                    'user_id' in data and int(data['user_id']) == int(user_id)):
+                    should_keep = False
+                
+                if should_keep:
                     new_group_b_responses[msg_id] = data
             group_b_responses = new_group_b_responses
         
         save_persistent_data()
         
-        # Check if all images for this Group B were actually deleted
+        # Check if all user images for this Group B were actually deleted
         remaining_images = db.get_all_images()
-        remaining_for_group_b = []
+        remaining_user_images = []
         
         for img in remaining_images:
             metadata = img.get('metadata', {})
@@ -3258,27 +3287,28 @@ def handle_group_b_reset_images(update: Update, context: CallbackContext) -> Non
                 except:
                     metadata = {}
                     
-            if isinstance(metadata, dict) and 'source_group_b_id' in metadata:
+            if isinstance(metadata, dict) and 'source_group_b_id' in metadata and 'set_by_user_id' in metadata:
                 try:
-                    if int(metadata['source_group_b_id']) == int(chat_id):
-                        remaining_for_group_b.append(img)
+                    if (int(metadata['source_group_b_id']) == int(chat_id) and 
+                        int(metadata['set_by_user_id']) == int(user_id)):
+                        remaining_user_images.append(img)
                 except (ValueError, TypeError) as e:
-                    logger.error(f"Error comparing Group B IDs: {e}")
+                    logger.error(f"Error comparing Group B IDs or user IDs: {e}")
         
         if success:
-            if not remaining_for_group_b:
-                logger.info(f"Successfully cleared {image_count} images for Group B: {chat_id}")
-                update.message.reply_text(f"🔄 已重置所有群码! 共清除了 {image_count} 个图片。")
+            if not remaining_user_images:
+                logger.info(f"Successfully cleared {user_image_count} images set by user {user_id} in Group B: {chat_id}")
+                update.message.reply_text(f"✅ 您的群码重置成功！已清除您设置的 {user_image_count} 个图片。")
             else:
-                # Some images still exist for this Group B
-                logger.warning(f"Reset didn't clear all images. {len(remaining_for_group_b)} images still remain for Group B {chat_id}")
-                update.message.reply_text(f"⚠️ 群码重置部分完成。已清除 {image_count - len(remaining_for_group_b)} 个图片，但还有 {len(remaining_for_group_b)} 个图片未能清除。")
+                # Some user images still exist for this Group B
+                logger.warning(f"Reset didn't clear all user images. {len(remaining_user_images)} user images still remain for Group B {chat_id}")
+                update.message.reply_text(f"⚠️ 您的群码重置部分完成。已清除您设置的 {user_image_count - len(remaining_user_images)} 个图片，但还有 {len(remaining_user_images)} 个图片未能清除。")
         else:
-            logger.error(f"Failed to clear images for Group B: {chat_id}")
-            update.message.reply_text("重置群码时出错，请查看日志。")
+            logger.error(f"Failed to clear user images for Group B: {chat_id}")
+            update.message.reply_text("重置您的群码时出错，请查看日志。")
     except Exception as e:
-        logger.error(f"Error clearing images: {e}")
-        update.message.reply_text(f"重置群码时出错: {e}")
+        logger.error(f"Error clearing user images: {e}")
+        update.message.reply_text(f"重置您的群码时出错: {e}")
 
 def set_image_group_b(update: Update, context: CallbackContext) -> None:
     """Set which Group B an image should be associated with."""
@@ -3536,7 +3566,15 @@ def register_handlers(dispatcher):
             run_async=True
         ))
     
-    # 3. Add handler for resetting a specific image by number
+    # 3. Add handler for resetting ALL images in Group B
+    if GROUP_B_IDS:
+        dispatcher.add_handler(MessageHandler(
+            Filters.text & Filters.regex(r'^重置全部群码$') & Filters.chat(list(GROUP_B_IDS)),
+            handle_group_b_reset_all_images,
+            run_async=True
+        ))
+    
+    # 4. Add handler for resetting a specific image by number
     if GROUP_B_IDS:
         dispatcher.add_handler(MessageHandler(
             Filters.text & Filters.regex(r'^重置群\d+$') & Filters.chat(list(GROUP_B_IDS)),
@@ -3544,7 +3582,7 @@ def register_handlers(dispatcher):
             run_async=True
         ))
     
-    # 4. Add handler for setting click mode in Group B
+    # 5. Add handler for setting click mode in Group B
     if GROUP_B_IDS:
         dispatcher.add_handler(MessageHandler(
             Filters.text & Filters.regex(r'^设置点击模式$') & Filters.chat(list(GROUP_B_IDS)),
@@ -3863,7 +3901,7 @@ def handle_admin_send_image(update: Update, context: CallbackContext) -> None:
             update.message.reply_text(f"转发至群B失败: {e}")
 
 def handle_reset_specific_image(update: Update, context: CallbackContext) -> None:
-    """Handle command to reset a specific image by its number."""
+    """Handle command to reset a specific image by its number (only images set by the user)."""
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     message_text = update.message.text.strip()
@@ -3887,26 +3925,54 @@ def handle_reset_specific_image(update: Update, context: CallbackContext) -> Non
         update.message.reply_text("只有群操作人或全局管理员可以重置群码。")
         return
     
-    logger.info(f"Admin {user_id} is resetting image number {image_number} in Group B: {chat_id}")
+    logger.info(f"Admin {user_id} is resetting their image number {image_number} in Group B: {chat_id}")
     
     # Get image count before deletion
     all_images = db.get_all_images()
     before_count = len(all_images)
     logger.info(f"Total images in database before reset: {before_count}")
     
-    # Delete the specific image by its number
-    success = db.delete_image_by_number(image_number, chat_id)
+    # Count user images with this number before deletion
+    user_images_with_number = []
+    for img in all_images:
+        metadata = img.get('metadata', {})
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except:
+                metadata = {}
+                
+        if isinstance(metadata, dict) and img.get('number') == image_number:
+            set_by_user_id = metadata.get('set_by_user_id')
+            source_group_b_id = metadata.get('source_group_b_id')
+            if (set_by_user_id and int(set_by_user_id) == int(user_id) and
+                source_group_b_id and int(source_group_b_id) == int(chat_id)):
+                user_images_with_number.append(img)
+    
+    user_image_count = len(user_images_with_number)
+    
+    # Delete the specific image by its number (only if set by this user)
+    success = db.delete_image_by_number_and_user(image_number, user_id, chat_id)
     
     if success:
-        # Also clear related message mappings for this image
+        # Also clear related message mappings for this user's image
         global forwarded_msgs, group_b_responses
         
-        # Find any message mappings related to this image
+        # Find any message mappings related to this user's image
         mappings_to_remove = []
         for img_id, data in forwarded_msgs.items():
-            if data.get('number') == str(image_number) and data.get('group_b_chat_id') == chat_id:
-                mappings_to_remove.append(img_id)
-                logger.info(f"Found matching mapping for image {img_id} with number {image_number}")
+            if ('number' in data and str(data.get('number')) == str(image_number) and
+                'group_b_chat_id' in data and data.get('group_b_chat_id') == chat_id):
+                # Check if this image was set by this user
+                try:
+                    img = db.get_image_by_id(img_id)
+                    if img and 'metadata' in img and isinstance(img['metadata'], dict):
+                        set_by_user_id = img['metadata'].get('set_by_user_id')
+                        if set_by_user_id and int(set_by_user_id) == int(user_id):
+                            mappings_to_remove.append(img_id)
+                            logger.info(f"Found matching mapping for user's image {img_id} with number {image_number}")
+                except Exception as e:
+                    logger.error(f"Error checking image mapping: {e}")
         
         # Remove the found mappings
         for img_id in mappings_to_remove:
@@ -3926,14 +3992,131 @@ def handle_reset_specific_image(update: Update, context: CallbackContext) -> Non
         
         # Provide feedback to the user
         if deleted_count > 0:
-            update.message.reply_text(f"✅ 已重置群码 {image_number}，删除了 {deleted_count} 张图片。")
-            logger.info(f"Successfully reset image number {image_number}")
+            update.message.reply_text(f"✅ 已重置您的群码 {image_number}，删除了您设置的 {deleted_count} 张图片。")
+            logger.info(f"Successfully reset user's image number {image_number}")
         else:
-            update.message.reply_text(f"⚠️ 未找到群号为 {image_number} 的图片，或者删除操作失败。")
-            logger.warning(f"No images with number {image_number} were deleted")
+            update.message.reply_text(f"⚠️ 未找到您设置的群号为 {image_number} 的图片。")
+            logger.warning(f"No images with number {image_number} set by user {user_id} were found")
     else:
-        update.message.reply_text(f"❌ 重置群码 {image_number} 失败。未找到匹配的图片。")
-        logger.error(f"Failed to reset image number {image_number}")
+        if user_image_count > 0:
+            update.message.reply_text(f"❌ 重置您的群码 {image_number} 失败，请稍后重试。")
+            logger.error(f"Failed to reset user's image number {image_number}")
+        else:
+            update.message.reply_text(f"⚠️ 未找到您设置的群号为 {image_number} 的图片。")
+            logger.info(f"No images with number {image_number} set by user {user_id} found")
+
+def handle_group_b_reset_all_images(update: Update, context: CallbackContext) -> None:
+    """Handle the command to reset ALL images in Group B (admin function)."""
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    message_text = update.message.text.strip()
+    
+    # Check if this is Group B
+    if chat_id not in GROUP_B_IDS:
+        logger.info(f"Reset all images command used in non-Group B chat: {chat_id}")
+        return
+    
+    # Check if the message is exactly "重置全部群码"
+    if message_text != "重置全部群码":
+        return
+    
+    # Check if user is a group admin or global admin
+    if not is_group_admin(user_id, chat_id) and not is_global_admin(user_id):
+        logger.info(f"User {user_id} tried to reset all images but is not an admin")
+        update.message.reply_text("只有群操作人或全局管理员可以重置全部群码。")
+        return
+    
+    logger.info(f"Admin {user_id} is resetting ALL images in Group B: {chat_id}")
+    
+    # Get current image count for this specific Group B for reporting
+    all_images = db.get_all_images()
+    logger.info(f"Total images in database before reset: {len(all_images)}")
+    
+    # Count all images associated with this Group B
+    group_b_images = []
+    if all_images:
+        for img in all_images:
+            metadata = img.get('metadata', {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except:
+                    metadata = {}
+                    
+            if isinstance(metadata, dict) and 'source_group_b_id' in metadata:
+                try:
+                    if int(metadata['source_group_b_id']) == int(chat_id):
+                        group_b_images.append(img)
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Error comparing Group B IDs: {e}")
+    
+    image_count = len(group_b_images)
+    logger.info(f"Found {image_count} images associated with Group B {chat_id}")
+    
+    # Delete ALL images from this Group B
+    try:
+        # Use the original function to delete ALL images from this Group B
+        success = db.clear_images_by_group_b(chat_id)
+        
+        # Also clear related message mappings for this Group B
+        global forwarded_msgs, group_b_responses
+        
+        # Filter out messages related to this Group B
+        if forwarded_msgs:
+            # Create a new dict to avoid changing size during iteration
+            new_forwarded_msgs = {}
+            for msg_id, data in forwarded_msgs.items():
+                # If the message was sent to this Group B, remove it
+                if 'group_b_chat_id' in data and int(data['group_b_chat_id']) != int(chat_id):
+                    new_forwarded_msgs[msg_id] = data
+                else:
+                    logger.info(f"Removing forwarded message mapping for {msg_id}")
+            
+            forwarded_msgs = new_forwarded_msgs
+        
+        # Same for group_b_responses
+        if group_b_responses:
+            new_group_b_responses = {}
+            for msg_id, data in group_b_responses.items():
+                if 'chat_id' in data and int(data['chat_id']) != int(chat_id):
+                    new_group_b_responses[msg_id] = data
+            group_b_responses = new_group_b_responses
+        
+        save_persistent_data()
+        
+        # Check if all images for this Group B were actually deleted
+        remaining_images = db.get_all_images()
+        remaining_for_group_b = []
+        
+        for img in remaining_images:
+            metadata = img.get('metadata', {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except:
+                    metadata = {}
+                    
+            if isinstance(metadata, dict) and 'source_group_b_id' in metadata:
+                try:
+                    if int(metadata['source_group_b_id']) == int(chat_id):
+                        remaining_for_group_b.append(img)
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Error comparing Group B IDs: {e}")
+        
+        if success:
+            if not remaining_for_group_b:
+                logger.info(f"Successfully cleared ALL {image_count} images for Group B: {chat_id}")
+                update.message.reply_text(f"🔄 已重置全部群码！共清除了 {image_count} 个图片。")
+            else:
+                # Some images still exist for this Group B
+                logger.warning(f"Reset didn't clear all images. {len(remaining_for_group_b)} images still remain for Group B {chat_id}")
+                update.message.reply_text(f"⚠️ 全部群码重置部分完成。已清除 {image_count - len(remaining_for_group_b)} 个图片，但还有 {len(remaining_for_group_b)} 个图片未能清除。")
+        else:
+            logger.error(f"Failed to clear all images for Group B: {chat_id}")
+            update.message.reply_text("重置全部群码时出错，请查看日志。")
+    except Exception as e:
+        logger.error(f"Error clearing all images: {e}")
+        update.message.reply_text(f"重置全部群码时出错: {e}")
 
 def fix_group_type(update: Update, context: CallbackContext) -> None:
     """Fix group type command for global admins only."""
